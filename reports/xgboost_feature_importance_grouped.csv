@@ -1,0 +1,16 @@
+base_feature,importance
+job,0.36498436
+category,0.2867041
+state,0.11744288
+amt,0.101051465
+transaction_hour,0.046996564
+gender,0.018872576
+time_since_last_transaction_minutes,0.018131267
+implied_travel_speed_kmh,0.013999013
+transaction_month,0.007206483
+customer_age,0.007050404
+city_pop,0.0060624275
+distance_from_last_transaction_km,0.004305806
+transaction_day_of_week,0.0037180458
+distance_from_home_km,0.002889346
+is_weekend,0.0005852132

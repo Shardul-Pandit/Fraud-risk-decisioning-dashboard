@@ -1,0 +1,37 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# Environment variables / secrets
+.env
+.env.local
+
+# Data files
+data/raw/*.csv
+data/processed/*.csv
+data/database/*.db
+data/database/*.sqlite
+data/database/*.sqlite3
+
+# Model artifacts
+models/*.pkl
+
+# MLflow tracking
+mlruns/
+mlflow.db
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# VS Code settings
+.vscode/
