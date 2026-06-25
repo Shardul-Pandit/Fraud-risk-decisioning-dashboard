@@ -2,7 +2,7 @@
 
 A production-style fraud risk decisioning system built with XGBoost, SHAP explainability, MLflow experiment tracking, and a 4-agent AI decisioning workflow. Analyzes financial transactions and generates structured approve / manual review / escalate recommendations with natural-language analyst summaries.
 
-**[🚀 Live Demo →](https://your-app-url.streamlit.app)** *(link coming soon)*
+**[🚀 Live Demo →]([https://your-app-url.streamlit.app](https://fraudguard-dashboard.streamlit.app/))**
 
 ---
 
