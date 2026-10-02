@@ -1,266 +1,308 @@
+import json
+import re
+
 import pandas as pd
 
-from src.preprocessing import engineer_features
+from src.agents.investigation_tools import TOOL_SPECS, InvestigationToolbox
+from src.llm_client import (
+    DEFAULT_MAX_PER_DAY,
+    DEFAULT_MAX_PER_MINUTE,
+    DEFAULT_MAX_TOOL_STEPS,
+    LLMError,
+    RateLimiter,
+    SummaryCache,
+    build_provider_chain,
+    get_setting,
+    run_with_failover,
+)
+from src.prompts import INVESTIGATION_SYSTEM_PROMPT, INVESTIGATION_USER_PROMPT
+
+
+TEMPLATE_MODE = "Rule-based template"
+MAX_SIGNALS = 3
+
+# Shared by every session in the app process.
+_summary_cache = SummaryCache()
+_minute_limiter = RateLimiter(
+    int(get_setting("LLM_MAX_PER_MINUTE", DEFAULT_MAX_PER_MINUTE)), 60
+)
+_day_limiter = RateLimiter(
+    int(get_setting("LLM_MAX_PER_DAY", DEFAULT_MAX_PER_DAY)), 24 * 60 * 60
+)
+
+_NUMBER_PATTERN = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def _numbers_in(text: str) -> set:
+    numbers = set()
+    for token in _NUMBER_PATTERN.findall(text):
+        try:
+            numbers.add(float(token.replace(",", "")))
+        except ValueError:
+            continue
+    return numbers
+
+
+def find_ungrounded_numbers(summary: str, facts: str) -> list:
+    """
+    Return numbers that appear in the LLM summary but not in the facts it
+    was given (the prompt plus every tool result).
+
+    This is how "the LLM never computes or changes a number" is enforced
+    rather than just requested: a summary with an invented or recalculated
+    figure is rejected and the next provider or the template is used.
+    """
+    allowed = _numbers_in(facts)
+    return sorted(number for number in _numbers_in(summary) if number not in allowed)
 
 
 class InvestigationAgent:
     """
-    Agent responsible for generating a fraud analyst-style investigation summary.
+    Writes the analyst findings for one scored transaction.
 
-    This rule-based version works without an API key.
-    Later, this can be upgraded to use an LLM when an API key is available.
+    Two modes, same inputs:
+    - LLM mode: the model chooses which lookups to run (SHAP drivers, recent
+      card activity, policy text) and writes the findings from the results.
+    - Template mode: a deterministic summary built from the same SHAP
+      output. Used when no API key is set, the API fails, the rate limit is
+      hit, or the LLM's answer fails the number check.
+
+    In both modes the risk signals come from SHAP, so the text can never
+    disagree with the model explanation shown next to it. The agent does
+    not decide anything: probability, band and decision are inputs.
     """
 
-    def _km_to_miles(self, km: float) -> float:
-        """
-        Convert kilometers to miles for explanation text.
-    """
-        return km * 0.621371
+    def __init__(
+        self,
+        providers=None,
+        cache=None,
+        limiters=None,
+        max_steps=None,
+    ):
+        self._providers = providers
+        self._cache = cache if cache is not None else _summary_cache
+        self._limiters = (
+            limiters if limiters is not None else [_minute_limiter, _day_limiter]
+        )
+        self._max_steps = max_steps or int(
+            get_setting("LLM_MAX_TOOL_STEPS", DEFAULT_MAX_TOOL_STEPS)
+        )
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
     def investigate(
         self,
         transaction: pd.DataFrame,
         risk_result: dict,
+        shap_explanation: dict | None = None,
     ) -> dict:
-        """
-        Generate an analyst-style investigation summary for one transaction.
-
-        Args:
-            transaction: DataFrame containing exactly one raw transaction row.
-            risk_result: Output from the Risk Scoring Agent.
-
-        Returns:
-            Dictionary containing investigation summary and key risk signals.
-        """
+        """Investigate a single transaction row with no card history."""
         if not isinstance(transaction, pd.DataFrame):
             raise TypeError("transaction must be a pandas DataFrame.")
 
         if len(transaction) != 1:
             raise ValueError("transaction must contain exactly one row.")
 
-        engineered = engineer_features(transaction)
-        row = engineered.iloc[0]
-
-        fraud_probability = risk_result["fraud_probability"]
-        risk_band = risk_result["risk_band"]
-        recommendation = risk_result["recommendation"]
-
-        amount = float(row.get("amt", 0))
-        category = row.get("category", "unknown")
-        merchant = row.get("merchant", "unknown")
-        state = row.get("state", "unknown")
-        transaction_hour = int(row.get("transaction_hour", 0))
-        customer_age = int(row.get("customer_age", 0))
-        distance_from_home = float(row.get("distance_from_home_km", 0))
-        time_since_last = float(row.get("time_since_last_transaction_minutes", 0))
-        distance_from_last = float(row.get("distance_from_last_transaction_km", 0))
-        travel_speed = float(row.get("implied_travel_speed_kmh", 0))
-
-        key_risk_signals = self._build_key_risk_signals(
-            amount=amount,
-            category=category,
-            transaction_hour=transaction_hour,
-            distance_from_home=distance_from_home,
-            time_since_last=time_since_last,
-            distance_from_last=distance_from_last,
-            travel_speed=travel_speed,
+        return self.investigate_with_context(
+            transactions=transaction,
+            selected_index=transaction.index[0],
+            risk_result=risk_result,
+            shap_explanation=shap_explanation,
         )
-
-        summary = self._build_summary(
-            fraud_probability=fraud_probability,
-            risk_band=risk_band,
-            recommendation=recommendation,
-            amount=amount,
-            category=category,
-            merchant=merchant,
-            state=state,
-            transaction_hour=transaction_hour,
-            customer_age=customer_age,
-            distance_from_home=distance_from_home,
-            time_since_last=time_since_last,
-            distance_from_last=distance_from_last,
-            travel_speed=travel_speed,
-            key_risk_signals=key_risk_signals,
-        )
-
-        return {
-            "agent_name": "Investigation Agent",
-            "summary": summary,
-            "investigation_summary": summary,
-            "key_risk_signals": key_risk_signals,
-            "suggested_action": recommendation,
-        }
 
     def investigate_with_context(
         self,
         transactions: pd.DataFrame,
-        selected_index: int,
+        selected_index,
         risk_result: dict,
+        shap_explanation: dict | None = None,
     ) -> dict:
-        """
-        Generate an investigation summary using the full transaction dataset as context.
-
-        This allows previous-transaction features to be calculated correctly.
-        """
         if selected_index not in transactions.index:
             raise ValueError(f"selected_index {selected_index} not found in transactions.")
 
-        engineered = engineer_features(transactions)
-        selected = engineered.loc[[selected_index]]
+        shap_explanation = shap_explanation or {
+            "error": "SHAP explanation was not provided.",
+            "risk_increasing_features": [],
+            "risk_reducing_features": [],
+        }
+        row = transactions.loc[selected_index]
+        facts = self._transaction_facts(row, risk_result)
 
-        return self.investigate(
-            transaction=selected,
-            risk_result=risk_result,
+        key_risk_signals = self._build_key_risk_signals(shap_explanation)
+        template_summary = self._build_template_summary(
+            facts, risk_result, shap_explanation
         )
 
-    def _build_key_risk_signals(
-        self,
-        amount: float,
-        category: str,
-        transaction_hour: int,
-        distance_from_home: float,
-        time_since_last: float,
-        distance_from_last: float,
-        travel_speed: float,
-    ) -> list:
-        """
-        Create human-readable risk signals from transaction features.
-        """
-        signals = []
-
-        if amount >= 500:
-            signals.append(f"High transaction amount (${amount:,.2f})")
-        elif amount >= 100:
-            signals.append(f"Moderate transaction amount (${amount:,.2f})")
-
-        if transaction_hour < 5 or transaction_hour > 22:
-            signals.append(f"Unusual transaction hour ({transaction_hour}:00)")
-
-        distance_from_home_miles = self._km_to_miles(distance_from_home)
-
-        if distance_from_home >= 500:
-            signals.append(
-                f"Merchant is far from customer home location ({distance_from_home_miles:,.1f} miles)"
-            )
-        elif distance_from_home >= 100:
-            signals.append(
-                f"Merchant is moderately far from customer home location ({distance_from_home_miles:,.1f} miles)"
-            )
-
-        if time_since_last < 60 and distance_from_last >= 500:
-            signals.append(
-                "Large location change shortly after previous transaction"
-            )
-
-        travel_speed_mph = self._km_to_miles(travel_speed)
-
-        if travel_speed >= 900:
-            signals.append(
-                f"Implied travel speed appears physically implausible ({travel_speed_mph:,.1f} mph)"
-            )
-        elif travel_speed >= 300:
-            signals.append(
-                f"High implied travel speed between transactions ({travel_speed_mph:,.1f} mph)"
-            )
-
-        high_attention_categories = {
-            "shopping_net",
-            "misc_net",
-            "grocery_pos",
-            "gas_transport",
+        result = {
+            "agent_name": "Investigation Agent",
+            "summary": template_summary,
+            "investigation_summary": template_summary,
+            "key_risk_signals": key_risk_signals,
+            "suggested_action": risk_result["recommendation"],
+            "summary_mode": TEMPLATE_MODE,
+            "fallback_reason": None,
+            "tool_trace": [],
+            "llm_steps": 0,
+            "from_cache": False,
         }
 
-        if category in high_attention_categories:
-            signals.append(f"Merchant category requires closer review ({category})")
+        cache_key = (
+            str(row.get("trans_num", selected_index)),
+            round(float(risk_result["fraud_probability"]), 6),
+        )
+        cached = self._cache.get(cache_key)
 
-        if not signals:
-            signals.append(
-                "No single rule-based red flag dominated this case; the model score reflects the overall transaction profile"
+        if cached is not None:
+            return {**result, **cached, "from_cache": True}
+
+        providers = (
+            self._providers if self._providers is not None else build_provider_chain()
+        )
+
+        if not any(provider.available() for provider in providers):
+            result["fallback_reason"] = "No LLM API key configured"
+            return result
+
+        if not all(limiter.allow() for limiter in self._limiters):
+            result["fallback_reason"] = "LLM rate limit reached, try again shortly"
+            return result
+
+        toolbox = InvestigationToolbox(transactions, selected_index, shap_explanation)
+        prompt = INVESTIGATION_USER_PROMPT.format(**facts)
+
+        def validate(loop_result):
+            evidence = prompt + json.dumps(
+                [call["result"] for call in loop_result.tool_trace], default=str
             )
+            ungrounded = find_ungrounded_numbers(loop_result.text, evidence)
+            if ungrounded:
+                raise LLMError(
+                    f"summary rejected, numbers not found in the evidence: {ungrounded}"
+                )
 
-        return signals
+        loop_result, provider, errors = run_with_failover(
+            providers=providers,
+            system=INVESTIGATION_SYSTEM_PROMPT,
+            prompt=prompt,
+            tool_specs=TOOL_SPECS,
+            tool_functions=toolbox.functions(),
+            max_steps=self._max_steps,
+            validate=validate,
+        )
 
-    def _build_summary(
+        if loop_result is None:
+            result["fallback_reason"] = "; ".join(errors) or "LLM unavailable"
+            return result
+
+        llm_fields = {
+            "summary": loop_result.text,
+            "investigation_summary": loop_result.text,
+            "summary_mode": provider.label,
+            "fallback_reason": None,
+            "tool_trace": loop_result.tool_trace,
+            "llm_steps": loop_result.steps,
+        }
+        self._cache.set(cache_key, llm_fields)
+
+        return {**result, **llm_fields}
+
+    # ------------------------------------------------------------------
+    # Deterministic pieces (shared by both modes)
+    # ------------------------------------------------------------------
+    def _transaction_facts(self, row: pd.Series, risk_result: dict) -> dict:
+        timestamp = pd.to_datetime(row["trans_date_trans_time"])
+
+        return {
+            "transaction_id": str(row.get("trans_num", "unknown")),
+            "amount": f"${float(row['amt']):,.2f}",
+            "merchant": str(row.get("merchant", "unknown")),
+            "category": str(row.get("category", "unknown")),
+            "state": str(row.get("state", "unknown")),
+            "timestamp": timestamp.strftime("%Y-%m-%d %H:%M"),
+            "probability": f"{risk_result['fraud_probability'] * 100:.2f}%",
+            "risk_band": risk_result["risk_band"],
+            "recommendation": risk_result["recommendation"],
+        }
+
+    def _describe(self, driver: dict) -> str:
+        return f"{driver['label']} ({driver['display_value']})"
+
+    def _build_key_risk_signals(self, shap_explanation: dict) -> list:
+        """
+        Risk signals are the features SHAP says pushed this score up.
+        Nothing here is hardcoded per category or threshold, so a signal
+        can only be listed if the model actually treated it as risky.
+        """
+        if shap_explanation.get("error"):
+            return ["Model explanation unavailable for this transaction"]
+
+        increasing = shap_explanation.get("risk_increasing_features", [])[:MAX_SIGNALS]
+
+        if not increasing:
+            return ["No feature materially increased the model's risk score"]
+
+        return [f"{self._describe(driver)} increased fraud risk" for driver in increasing]
+
+    def _join(self, items: list) -> str:
+        if len(items) <= 1:
+            return "".join(items)
+        return ", ".join(items[:-1]) + " and " + items[-1]
+
+    def _build_template_summary(
         self,
-        fraud_probability: float,
-        risk_band: str,
-        recommendation: str,
-        amount: float,
-        category: str,
-        merchant: str,
-        state: str,
-        transaction_hour: int,
-        customer_age: int,
-        distance_from_home: float,
-        time_since_last: float,
-        distance_from_last: float,
-        travel_speed: float,
-        key_risk_signals: list,
+        facts: dict,
+        risk_result: dict,
+        shap_explanation: dict,
     ) -> str:
-        """
-        Build the final analyst-style explanation.
-        """
-        probability_percent = fraud_probability * 100
+        risk_band = risk_result["risk_band"]
 
-        distance_from_home_miles = self._km_to_miles(distance_from_home)
-        distance_from_last_miles = self._km_to_miles(distance_from_last)
-        travel_speed_mph = self._km_to_miles(travel_speed)
+        opening = (
+            f"This transaction was classified as {risk_band} with a fraud probability "
+            f"of {facts['probability']}. It was a {facts['amount']} purchase at "
+            f"{facts['merchant']} in the {facts['category']} category, made by a "
+            f"customer in {facts['state']} at {facts['timestamp']}."
+        )
 
-        signal_text = "; ".join(key_risk_signals)
+        if shap_explanation.get("error"):
+            drivers = "A model explanation could not be generated for this transaction."
+        else:
+            increasing = [
+                self._describe(d)
+                for d in shap_explanation.get("risk_increasing_features", [])[:MAX_SIGNALS]
+            ]
+            reducing = [
+                self._describe(d)
+                for d in shap_explanation.get("risk_reducing_features", [])[:MAX_SIGNALS]
+            ]
 
-        if (
-            len(key_risk_signals) == 1
-            and key_risk_signals[0]
-            == "No single rule-based red flag dominated this case; the model score reflects the overall transaction profile"
-        ):
-            if risk_band == "Medium Risk":
-                signal_text = (
-                    "Although no single rule-based red flag dominated this case, "
-                    "the overall transaction profile produced an elevated model risk score "
-                    "and should be reviewed manually"
-                )
-            elif risk_band == "Low Risk":
-                signal_text = (
-                    "No single rule-based red flag dominated this case, and the overall "
-                    "transaction profile remained within the low-risk range"
-                )
+            up = (
+                f"The strongest factors raising the model's score were {self._join(increasing)}."
+                if increasing
+                else "No factor materially raised the model's score."
+            )
+            down = (
+                f" Factors lowering the score were {self._join(reducing)}."
+                if reducing
+                else ""
+            )
+            # Lead with whichever side explains the outcome.
+            drivers = (down.strip() + " " + up) if risk_band == "Low Risk" and reducing else up + down
 
         if risk_band == "High Risk":
-            action_text = (
+            action = (
                 "The recommended action is to deny the transaction and escalate it "
                 "for fraud analyst review."
             )
         elif risk_band == "Medium Risk":
-            action_text = (
+            action = (
                 "The recommended action is to send the transaction to manual review "
                 "before approval."
             )
         else:
-            action_text = (
+            action = (
                 "The recommended action is to approve the transaction while continuing "
                 "standard monitoring."
             )
 
-        previous_transaction_text = ""
-
-        if time_since_last < 999999:
-            if travel_speed >= 300 or (time_since_last < 60 and distance_from_last >= 500):
-                previous_transaction_text = (
-                    f" Recent transaction history shows {time_since_last:,.1f} minutes since "
-                    f"the last transaction, {distance_from_last_miles:,.1f} miles from the "
-                    f"previous merchant location, and an implied travel speed of "
-                    f"{travel_speed_mph:,.1f} mph."
-                )
-
-
-        summary = (
-            f"This transaction was classified as {risk_band} with a fraud probability "
-            f"of {probability_percent:.2f}%. The transaction involved a ${amount:,.2f} "
-            f"purchase at {merchant} in the {category} category, located in {state}, "
-            f"around hour {transaction_hour}:00. The customer age is approximately "
-            f"{customer_age}, and the merchant is {distance_from_home_miles:,.1f} miles from "
-            f"the customer home location.{previous_transaction_text} Key risk signals: "
-            f"{signal_text}. {action_text}"
-        )
-
-        return summary
+        return f"{opening} {drivers} {action}"

@@ -19,6 +19,50 @@ def load_fraud_policy() -> str:
     return POLICY_PATH.read_text(encoding="utf-8")
 
 
+POLICY_SECTION_TITLES = {
+    "low_risk": "Low Risk",
+    "medium_risk": "Medium Risk",
+    "high_risk": "High Risk",
+    "false_positives_and_negatives": "False Positives and False Negatives",
+    "analyst_review": "Analyst Review Guidance",
+    "escalation": "Escalation Guidance",
+}
+
+
+def get_policy_section(section: str) -> str:
+    """
+    Return one section of fraud_policy.md by key (see POLICY_SECTION_TITLES).
+
+    The text is read from the policy file, so editing the policy changes
+    what the Investigation Agent retrieves without touching code.
+    """
+    title = POLICY_SECTION_TITLES.get(section)
+
+    if title is None:
+        raise ValueError(
+            f"Unknown policy section '{section}'. "
+            f"Choose one of: {sorted(POLICY_SECTION_TITLES)}"
+        )
+
+    lines = []
+    in_section = False
+
+    for line in load_fraud_policy().splitlines():
+        if line.startswith("#"):
+            if in_section:
+                break
+            in_section = line.lstrip("#").strip() == title
+            continue
+
+        if in_section and line.strip() and line.strip() != "---":
+            lines.append(line.strip())
+
+    if not lines:
+        raise ValueError(f"Policy section '{title}' not found in {POLICY_PATH.name}")
+
+    return " ".join(lines)
+
+
 def retrieve_policy_section(recommendation: str) -> str:
     """
     Retrieve the most relevant policy section based on the recommendation.

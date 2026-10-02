@@ -12,10 +12,14 @@ class FraudDecisionWorkflow:
     Multi-agent workflow for fraud risk decisioning.
 
     Workflow:
-    1. Risk Scoring Agent predicts fraud probability.
-    2. Investigation Agent creates analyst-style explanation.
-    3. Policy Agent retrieves matching policy guidance.
-    4. Decision Agent creates final business recommendation.
+    1. Risk Scoring Agent predicts fraud probability (XGBoost).
+    2. SHAP explains the score.
+    3. Investigation Agent writes the analyst findings. This is the only
+       LLM step: it calls tools to look up evidence, and falls back to a
+       rule-based template when no LLM is available.
+    4. Policy Agent retrieves matching policy guidance (rule-based).
+    5. Decision Agent creates the final recommendation (rule-based, so
+       every approve / review / deny can be audited).
     """
 
     def __init__(self):
@@ -32,10 +36,12 @@ class FraudDecisionWorkflow:
         use fallback values because only one transaction is available.
         """
         risk_result = self.risk_scoring_agent.score_transaction(transaction)
+        shap_explanation = self._explain(transaction, transaction.index[0])
 
         investigation_result = self.investigation_agent.investigate(
             transaction=transaction,
             risk_result=risk_result,
+            shap_explanation=shap_explanation,
         )
 
         policy_result = self.policy_agent.review_policy(risk_result)
@@ -52,7 +58,27 @@ class FraudDecisionWorkflow:
             "investigation_result": investigation_result,
             "policy_result": policy_result,
             "final_decision": final_decision,
+            "shap_explanation": shap_explanation,
         }
+
+    def _explain(self, transactions: pd.DataFrame, selected_index) -> dict:
+        """
+        SHAP runs before the Investigation Agent because the agent's summary
+        (LLM or template) is written from the SHAP output.
+        """
+        try:
+            return generate_local_shap_explanation(
+                transactions=transactions,
+                selected_index=selected_index,
+                top_n=6,
+            )
+        except Exception as error:
+            return {
+                "error": str(error),
+                "top_features": [],
+                "risk_increasing_features": [],
+                "risk_reducing_features": [],
+            }
 
     def run_with_context(
         self,
@@ -80,24 +106,13 @@ class FraudDecisionWorkflow:
             selected_index=selected_index,
         )
 
-        try:
-            shap_explanation = generate_local_shap_explanation(
-                transactions=transactions,
-                selected_index=selected_index,
-                top_n=6,
-            )
-        except Exception as error:
-            shap_explanation = {
-            "error": str(error),
-            "top_features": [],
-                "risk_increasing_features": [],
-                "risk_reducing_features": [],
-            }
+        shap_explanation = self._explain(transactions, selected_index)
 
         investigation_result = self.investigation_agent.investigate_with_context(
             transactions=transactions,
             selected_index=selected_index,
             risk_result=risk_result,
+            shap_explanation=shap_explanation,
         )
 
         policy_result = self.policy_agent.review_policy(risk_result)
