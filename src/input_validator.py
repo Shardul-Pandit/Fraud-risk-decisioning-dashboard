@@ -9,14 +9,12 @@ REQUIRED_RAW_COLUMNS = [
     "merchant",
     "category",
     "amt",
-    "gender",
     "city",
     "state",
     "zip",
     "lat",
     "long",
     "city_pop",
-    "job",
     "dob",
     "trans_num",
     "unix_time",
@@ -29,6 +27,8 @@ OPTIONAL_COLUMNS = [
     "first",
     "last",
     "street",
+    "gender",
+    "job",
     TARGET_COLUMN,
 ]
 
@@ -76,7 +76,7 @@ def validate_transaction_dataframe(df: pd.DataFrame):
                 "The uploaded file does not match the expected real-world fraud "
                 f"transaction schema. Missing required columns: {missing_columns}. "
                 "Expected columns include transaction time, card number, merchant, "
-                "category, amount, customer location, merchant location, job, date "
+                "category, amount, customer location, merchant location, date "
                 "of birth, and transaction identifiers."
             ),
             None,

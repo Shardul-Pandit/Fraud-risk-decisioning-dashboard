@@ -3,6 +3,8 @@ from pathlib import Path
 import joblib
 import pandas as pd
 
+from src.preprocessing import CATEGORICAL_FEATURES
+
 
 MODEL_PATH = Path("models") / "real_world_xgboost_model.joblib"
 REPORTS_DIR = Path("reports")
@@ -28,9 +30,8 @@ def get_base_feature(clean_name: str) -> str:
     Examples:
     category_misc_net -> category
     state_TX -> state
-    job_Cytogeneticist -> job
     """
-    categorical_prefixes = ["category_", "gender_", "state_", "job_"]
+    categorical_prefixes = [f"{name}_" for name in CATEGORICAL_FEATURES]
 
     for prefix in categorical_prefixes:
         if clean_name.startswith(prefix):

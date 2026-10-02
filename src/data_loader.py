@@ -44,10 +44,29 @@ def load_legacy_data() -> pd.DataFrame:
     return df
 
 
+def load_full_data() -> pd.DataFrame:
+    """
+    Load the full fraudTest.csv dataset used for training and evaluation.
+
+    The full file is not committed to the repo (it is about 150 MB), so this
+    is only used by the training and ablation scripts, never by the app.
+    """
+    if not REAL_WORLD_DATA_PATH.exists():
+        raise FileNotFoundError(
+            f"Full dataset not found at {REAL_WORLD_DATA_PATH}. "
+            "Download fraudTest.csv and place it inside data/raw/."
+        )
+
+    df = pd.read_csv(REAL_WORLD_DATA_PATH, index_col="Unnamed: 0")
+    df.index.name = None
+    return df
+
+
 def load_raw_data() -> pd.DataFrame:
     """
     Default data loader for the project.
 
-    The project now uses the real-world-style fraud dataset by default.
+    Returns the bundled sample, which is what the app and demo use.
+    Training uses load_full_data() instead.
     """
     return load_real_world_data()

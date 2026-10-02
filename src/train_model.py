@@ -19,7 +19,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from xgboost import XGBClassifier
 
-from src.data_loader import load_raw_data
+from src.data_loader import load_full_data
 from src.preprocessing import (
     CATEGORICAL_FEATURES,
     NUMERIC_FEATURES,
@@ -40,10 +40,22 @@ MODEL_COMPARISON_PATH = REPORTS_DIR / "real_world_model_comparison.csv"
 MLFLOW_EXPERIMENT_NAME = "real_world_fraud_detection"
 
 
-def build_preprocessor() -> ColumnTransformer:
+def build_preprocessor(
+    numeric_features=None,
+    categorical_features=None,
+) -> ColumnTransformer:
     """
     Build preprocessing pipeline for numeric and categorical features.
+
+    Feature lists default to the ones in src.preprocessing. They are
+    parameters so the ablation script can train on other feature sets
+    with exactly the same pipeline.
     """
+    if numeric_features is None:
+        numeric_features = NUMERIC_FEATURES
+    if categorical_features is None:
+        categorical_features = CATEGORICAL_FEATURES
+
     numeric_transformer = StandardScaler()
 
     categorical_transformer = OneHotEncoder(
@@ -53,8 +65,8 @@ def build_preprocessor() -> ColumnTransformer:
 
     preprocessor = ColumnTransformer(
         transformers=[
-            ("numeric", numeric_transformer, NUMERIC_FEATURES),
-            ("categorical", categorical_transformer, CATEGORICAL_FEATURES),
+            ("numeric", numeric_transformer, numeric_features),
+            ("categorical", categorical_transformer, categorical_features),
         ],
         sparse_threshold=0.3,
     )
@@ -62,7 +74,10 @@ def build_preprocessor() -> ColumnTransformer:
     return preprocessor
 
 
-def build_logistic_regression_pipeline() -> Pipeline:
+def build_logistic_regression_pipeline(
+    numeric_features=None,
+    categorical_features=None,
+) -> Pipeline:
     """
     Build Logistic Regression baseline pipeline.
     """
@@ -74,7 +89,7 @@ def build_logistic_regression_pipeline() -> Pipeline:
 
     pipeline = Pipeline(
         steps=[
-            ("preprocessor", build_preprocessor()),
+            ("preprocessor", build_preprocessor(numeric_features, categorical_features)),
             ("model", model),
         ]
     )
@@ -82,7 +97,11 @@ def build_logistic_regression_pipeline() -> Pipeline:
     return pipeline
 
 
-def build_xgboost_pipeline(scale_pos_weight: float) -> Pipeline:
+def build_xgboost_pipeline(
+    scale_pos_weight: float,
+    numeric_features=None,
+    categorical_features=None,
+) -> Pipeline:
     """
     Build XGBoost advanced model pipeline.
 
@@ -105,7 +124,7 @@ def build_xgboost_pipeline(scale_pos_weight: float) -> Pipeline:
 
     pipeline = Pipeline(
         steps=[
-            ("preprocessor", build_preprocessor()),
+            ("preprocessor", build_preprocessor(numeric_features, categorical_features)),
             ("model", model),
         ]
     )
@@ -199,7 +218,7 @@ def train_and_compare_models():
     Train Logistic Regression and XGBoost models, evaluate them, and save artifacts.
     """
     print("Loading data...")
-    df = load_raw_data()
+    df = load_full_data()
 
     print("Preparing model features...")
     X, y = prepare_model_data(df)

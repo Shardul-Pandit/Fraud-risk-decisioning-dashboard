@@ -19,11 +19,14 @@ NUMERIC_FEATURES = [
     "implied_travel_speed_kmh",
 ]
 
+# gender and job are deliberately excluded.
+# - gender is a protected attribute and has no place in a fraud decision.
+# - job describes the cardholder, not the transaction. In this dataset it
+#   acts as a customer ID, and the ablation in src/ablation.py shows the
+#   model performs the same without it.
 CATEGORICAL_FEATURES = [
     "category",
-    "gender",
     "state",
-    "job",
 ]
 
 MODEL_FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
