@@ -22,16 +22,18 @@ DEMO_TRANSACTIONS = {
 }
 
 
+# The case a first-time visitor sees, already analysed.
+DEFAULT_DEMO = "High-Risk Example"
+
+
 DISPLAY_COLUMNS = [
     "trans_date_trans_time",
     "merchant",
     "category",
     "amt",
-    "gender",
     "city",
     "state",
     "city_pop",
-    "job",
     "dob",
     "lat",
     "long",
@@ -273,7 +275,7 @@ def render_main_header():
         [
             "XGBoost Model",
             "SHAP Explainability",
-            "Agentic Workflow",
+            "LLM Investigation Agent",
             "MLflow Tracked",
         ]
     )
@@ -437,7 +439,7 @@ def display_selected_transaction(transaction: pd.DataFrame):
 
     st.dataframe(
         transaction[available_columns],
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -463,9 +465,7 @@ def format_feature_name(feature_name: str) -> str:
     readable_names = {
         "amt": "Transaction Amount",
         "category": "Merchant Category",
-        "gender": "Customer Gender",
         "state": "Customer State",
-        "job": "Customer Job",
         "transaction_hour": "Transaction Hour",
         "transaction_day_of_week": "Transaction Day of Week",
         "transaction_month": "Transaction Month",
@@ -596,10 +596,10 @@ def display_shap_driver_expander(shap_explanation: dict):
 
             driver_rows.append(
                 {
-                    "Feature": format_feature_name(base_feature),
-                    "Value": format_shap_feature_value(
-                        base_feature,
-                        feature["feature_value"],
+                    "Feature": feature.get("label", format_feature_name(base_feature)),
+                    "Value": feature.get(
+                        "display_value",
+                        format_shap_feature_value(base_feature, feature["feature_value"]),
                     ),
                     "Impact": feature["impact"],
                     "Impact Strength": round(feature["abs_shap_value"], 4),
@@ -608,9 +608,39 @@ def display_shap_driver_expander(shap_explanation: dict):
 
         st.dataframe(
             pd.DataFrame(driver_rows),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
+
+
+def render_summary_mode(investigation_result: dict):
+    """
+    Say plainly whether an LLM or the rule-based template wrote the summary.
+    """
+    mode = investigation_result.get("summary_mode", "Rule-based template")
+    tool_trace = investigation_result.get("tool_trace", [])
+    fallback_reason = investigation_result.get("fallback_reason")
+
+    if tool_trace or mode != "Rule-based template":
+        cached = " · cached" if investigation_result.get("from_cache") else ""
+        st.caption(
+            f"✨ Written by **{mode}** from {len(tool_trace)} tool "
+            f"lookup{'s' if len(tool_trace) != 1 else ''}{cached}. "
+            "The score and decision are rule-based and were not set by the LLM."
+        )
+    else:
+        reason = f" ({fallback_reason.split(';')[0][:120]})" if fallback_reason else ""
+        st.caption(f"⚙️ Written by the **rule-based template**, no LLM used{reason}.")
+
+
+def render_tool_calls(tool_trace: list):
+    """
+    Show each lookup the LLM chose to make, with its arguments and result.
+    """
+    for call in tool_trace:
+        arguments = ", ".join(f"{k}={v!r}" for k, v in call["args"].items())
+        st.markdown(f"**Step {call['step']}** · `{call['tool']}({arguments})`")
+        st.json(call["result"], expanded=False)
 
 
 def render_agent_workflow_trace(
@@ -639,18 +669,37 @@ def render_agent_workflow_trace(
         trace_col3.metric("Recommendation", risk_result["recommendation"])
 
     with st.expander("2 · Investigation Agent", expanded=False):
-        st.caption("Builds the analyst-style narrative and key risk signals.")
+        st.caption(
+            "Writes the analyst findings. An LLM chooses which lookups to run "
+            "and writes from the results; a rule-based template takes over if "
+            "no LLM is available."
+        )
+        st.markdown(f"**Mode:** {investigation_result.get('summary_mode', 'Rule-based template')}")
+
+        if investigation_result.get("fallback_reason"):
+            st.markdown(
+                f"**Why no LLM:** {escape_markdown_text(investigation_result['fallback_reason'])}"
+            )
+
+        tool_trace = investigation_result.get("tool_trace", [])
+        if tool_trace:
+            st.markdown(
+                f"**Tool calls chosen by the LLM** "
+                f"({investigation_result.get('llm_steps', 0)} model steps)"
+            )
+            render_tool_calls(tool_trace)
+
         st.markdown("**Summary**")
         st.markdown(escape_markdown_text(investigation_result["summary"]))
 
         key_risk_signals = investigation_result.get("key_risk_signals", [])
         if key_risk_signals:
-            st.markdown("**Key risk signals**")
+            st.markdown("**Key risk signals (from SHAP)**")
             for signal in key_risk_signals:
                 st.markdown(f"- {escape_markdown_text(signal)}")
 
     with st.expander("3 · Policy Agent", expanded=False):
-        st.caption("Maps the recommendation to supporting fraud policy guidance.")
+        st.caption("Rule-based. Maps the recommendation to supporting fraud policy guidance.")
         st.markdown(
             f"**Recommendation:** {escape_markdown_text(policy_result['recommendation'])}"
         )
@@ -658,7 +707,7 @@ def render_agent_workflow_trace(
         st.markdown(escape_markdown_text(policy_result["policy_guidance"]))
 
     with st.expander("4 · Decision Agent", expanded=False):
-        st.caption("Consolidates every agent into the final decision report.")
+        st.caption("Rule-based. Applies fixed thresholds, so every decision can be audited.")
         st.text(final_decision["final_report"])
 
 
@@ -733,16 +782,9 @@ def display_decision_dashboard(workflow_result: dict, show_workflow_details: boo
     st.write("")
 
     with st.container(border=True):
-        render_section_header("AI Analyst Summary")
+        render_section_header("Analyst Summary")
+        render_summary_mode(investigation_result)
         st.markdown(escape_markdown_text(investigation_result["summary"]))
-
-        shap_sentence = build_shap_driver_sentence(
-            workflow_result.get("shap_explanation"),
-            risk_band=risk_band,
-        )
-
-        if shap_sentence:
-            st.markdown(escape_markdown_text(shap_sentence))
 
         display_shap_driver_expander(
             workflow_result.get("shap_explanation")
@@ -809,7 +851,7 @@ def render_feature_importance_chart(top_importance: pd.DataFrame):
         font=dict(size=13),
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def display_model_performance_page():
@@ -886,7 +928,7 @@ def display_model_performance_page():
 
     st.dataframe(
         comparison_df,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -926,7 +968,7 @@ def display_model_performance_page():
     with st.expander("View global feature importance table", expanded=False):
         st.dataframe(
             readable_importance[["Feature", "Importance"]],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -937,16 +979,16 @@ def display_about_page():
     """
     render_section_header(
         "About This App",
-        "An agentic AI fraud risk decisioning dashboard for financial transactions.",
+        "A fraud risk decisioning dashboard with an LLM investigation agent.",
     )
 
     render_intro_panel(
         "What it does",
         "This dashboard reviews financial transactions for fraud risk. It combines "
-        "XGBoost fraud scoring, SHAP explainability, MLflow experiment tracking and a "
-        "multi-agent decision workflow to produce a fraud probability, risk band, "
-        "business recommendation, analyst summary, policy support and "
-        "transaction-specific model drivers.",
+        "XGBoost fraud scoring, SHAP explainability and MLflow experiment tracking "
+        "with a four-step decision workflow. One step is an LLM agent that looks up "
+        "evidence with tool calls and writes the analyst findings. The score and the "
+        "approve / review / deny decision are rule-based so they can be audited.",
     )
 
     st.write("")
@@ -972,7 +1014,7 @@ def display_about_page():
             <div class="about-card">
                 <h4>Dataset</h4>
                 <p>A real-world-style fraud transaction dataset with merchant, category,
-                amount, location and customer attributes. Engineered features include
+                amount, and location attributes. Gender and job are not used by the model. Engineered features include
                 transaction time, customer age, distance from home, time since the
                 previous transaction and implied travel speed.</p>
             </div>
@@ -987,12 +1029,14 @@ def display_about_page():
         st.markdown(
             """
             <div class="about-card">
-                <h4>Multi-agent workflow</h4>
+                <h4>Decision workflow</h4>
                 <ul>
-                    <li><b>Risk Scoring Agent</b> — scores fraud probability and risk band</li>
-                    <li><b>Investigation Agent</b> — writes the analyst summary</li>
-                    <li><b>Policy Agent</b> — applies policy guidance</li>
-                    <li><b>Decision Agent</b> — issues the final recommendation</li>
+                    <li><b>Risk Scoring Agent</b> (XGBoost): fraud probability and risk band</li>
+                    <li><b>Investigation Agent</b> (LLM with tool calling): chooses lookups
+                    (SHAP drivers, recent card activity, policy text) and writes the findings.
+                    Falls back to a rule-based template without an API key</li>
+                    <li><b>Policy Agent</b> (rule-based): retrieves policy guidance</li>
+                    <li><b>Decision Agent</b> (rule-based): final recommendation from fixed thresholds</li>
                 </ul>
             </div>
             """,
@@ -1025,6 +1069,7 @@ def display_about_page():
                     <li>Python, pandas, NumPy</li>
                     <li>XGBoost &amp; scikit-learn</li>
                     <li>SHAP explainability</li>
+                    <li>Gemini with tool calling (provider failover)</li>
                     <li>MLflow experiment tracking</li>
                     <li>Streamlit &amp; Plotly</li>
                 </ul>
@@ -1039,7 +1084,8 @@ def display_about_page():
             <div class="about-card">
                 <h4>Limitations &amp; future work</h4>
                 <ul>
-                    <li>Trained on a static, offline dataset</li>
+                    <li>Trained on a static, simulated dataset</li>
+                    <li>Recall drops from about 95% to about 93% on cards the model has never seen</li>
                     <li>No real-time streaming or feedback loop yet</li>
                     <li>Future: live scoring API and analyst feedback</li>
                     <li>Future: drift monitoring and auto-retraining</li>
@@ -1061,7 +1107,7 @@ def render_transaction_review_page(input_mode, show_transaction, show_workflow_d
 
     render_intro_panel(
         "How it works",
-        "Choose a demo transaction or upload a CSV, select the row you want to review, and "
+        "Pick a demo transaction or upload a CSV, select the row you want to review, and "
         "run the fraud risk analysis to generate a score, explanation, and recommended action.",
     )
 
@@ -1146,7 +1192,7 @@ def render_transaction_review_page(input_mode, show_transaction, show_workflow_d
 
         if clean_df is not None:
             with st.expander("Uploaded Data Preview", expanded=False):
-                st.dataframe(clean_df.head(20), use_container_width=True)
+                st.dataframe(clean_df.head(20), width="stretch")
 
             transactions = clean_df.drop(columns=["is_fraud"], errors="ignore")
 
@@ -1179,6 +1225,7 @@ def render_transaction_review_page(input_mode, show_transaction, show_workflow_d
             demo_choice = st.selectbox(
                 "Choose a demo case",
                 list(DEMO_TRANSACTIONS.keys()),
+                index=list(DEMO_TRANSACTIONS.keys()).index(DEFAULT_DEMO),
             )
 
             selected_index = DEMO_TRANSACTIONS[demo_choice]
@@ -1210,7 +1257,16 @@ def render_transaction_review_page(input_mode, show_transaction, show_workflow_d
             with st.expander("Selected Transaction", expanded=True):
                 display_selected_transaction(selected_transaction)
 
-        if st.button("Run Fraud Risk Review", type="primary"):
+        run_clicked = st.button("Run Fraud Risk Review", type="primary")
+
+        # Demo cases run on their own, so a visitor lands on a finished
+        # review instead of an empty page. Uploaded rows wait for the button.
+        auto_run = (
+            input_mode == "Demo Transaction"
+            and st.session_state["workflow_result"] is None
+        )
+
+        if run_clicked or auto_run:
             with st.spinner("Running fraud decision workflow..."):
                 workflow_result = run_fraud_decision_workflow_with_context(
                     transactions=transactions,
@@ -1253,7 +1309,7 @@ def render_sidebar():
             index=0,
         )
 
-        input_mode = "Upload CSV"
+        input_mode = "Demo Transaction"
         show_transaction = True
         show_workflow_details = False
 
@@ -1263,7 +1319,7 @@ def render_sidebar():
 
             input_mode = st.radio(
                 "Input source",
-                ["Upload CSV", "Demo Transaction"],
+                ["Demo Transaction", "Upload CSV"],
                 index=0,
             )
 
@@ -1278,7 +1334,7 @@ def render_sidebar():
             )
 
         st.divider()
-        st.caption("Built with XGBoost, SHAP, MLflow, and Streamlit.")
+        st.caption("Built with XGBoost, SHAP, Gemini, MLflow, and Streamlit.")
 
     return page, input_mode, show_transaction, show_workflow_details
 
