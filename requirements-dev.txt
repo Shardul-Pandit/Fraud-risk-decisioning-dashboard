@@ -1,0 +1,4 @@
+# Training and testing. Not needed to run the app.
+-r requirements.txt
+mlflow==3.12.0
+pytest==9.1.1
