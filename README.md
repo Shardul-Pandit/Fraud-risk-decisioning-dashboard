@@ -164,13 +164,14 @@ Fraud-risk-decisioning-dashboard/
 │   └── keep_awake.py           # Used by the keep-awake GitHub Action
 ├── .github/workflows/          # CI and keep-awake
 ├── models/
-│   └── real_world_xgboost_model.joblib
+│   ├── real_world_xgboost_model.joblib   # Deployed model
+│   └── legacy/                 # Models from the first version
 ├── data/
 │   ├── sample/                 # Bundled sample dataset (518 rows)
 │   └── policies/
 │       └── fraud_policy.md
 ├── reports/                    # Model comparison, importance and ablation CSVs
-├── notebooks/                  # EDA and baseline notebooks
+├── notebooks/legacy/           # First-version notebooks (anonymized Kaggle dataset)
 ├── assets/
 │   └── screenshots/
 ├── requirements.txt            # App dependencies
@@ -222,6 +223,8 @@ pytest
 ## Dataset
 
 A simulated credit card transaction dataset (`fraudTest.csv`, 555,719 transactions, 0.39% fraud) with merchant, category, amount, location and customer attributes. A bundled sample of 518 rows, including the three demo transactions and the recent history of the high-risk demo card, ships with the repo for demo mode. The full file is not committed because of its size.
+
+The project started on the anonymized Kaggle credit card dataset (284,807 transactions, features V1 to V28) and moved to this one because named features allow feature engineering and readable explanations. The original notebooks and models are kept under `notebooks/legacy/` and `models/legacy/`.
 
 ---
 

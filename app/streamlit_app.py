@@ -942,7 +942,7 @@ def display_model_performance_page():
         "Why XGBoost was selected",
         "XGBoost was deployed because it improved recall, increased PR-AUC, caught more "
         "fraud cases, and substantially reduced false positives compared with the "
-        "Logistic Regression baseline — a better balance of catching fraud while "
+        "Logistic Regression baseline, giving a better balance of catching fraud while "
         "keeping legitimate customers unaffected.",
     )
 
