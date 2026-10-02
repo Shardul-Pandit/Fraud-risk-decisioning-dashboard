@@ -132,3 +132,22 @@ def test_find_ungrounded_numbers():
     facts = "Amount: $1,234.50. Probability: 97.05%. Time 00:42."
     assert find_ungrounded_numbers("It cost $1,234.50 at 97.05% risk.", facts) == []
     assert find_ungrounded_numbers("Roughly 97% risk.", facts) == [97.0]
+
+
+def test_no_fraud_prefix_reaches_the_summary_or_the_llm(transactions):
+    provider = FakeProvider(
+        [tool_turn(("get_recent_transactions", {"limit": 5})), text_turn("Findings.")]
+    )
+    investigation = make_workflow([provider]).run_with_context(
+        transactions, HIGH_RISK_INDEX
+    )["investigation_result"]
+
+    prompt = provider.calls[0]["messages"][0]["text"]
+    recent = str(investigation["tool_trace"][0]["result"])
+    template = make_workflow([]).run_with_context(transactions, HIGH_RISK_INDEX)[
+        "investigation_result"
+    ]["summary"]
+
+    for text in (prompt, recent, template):
+        assert "fraud_" not in text
+    assert "Rohan, White and Aufderhar" in prompt

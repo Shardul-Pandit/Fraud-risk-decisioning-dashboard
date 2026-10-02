@@ -15,6 +15,7 @@ from src.llm_client import (
     get_setting,
     run_with_failover,
 )
+from src.preprocessing import clean_merchant_name
 from src.prompts import INVESTIGATION_SYSTEM_PROMPT, INVESTIGATION_USER_PROMPT
 
 
@@ -216,7 +217,7 @@ class InvestigationAgent:
         return {
             "transaction_id": str(row.get("trans_num", "unknown")),
             "amount": f"${float(row['amt']):,.2f}",
-            "merchant": str(row.get("merchant", "unknown")),
+            "merchant": clean_merchant_name(row.get("merchant", "unknown")),
             "category": str(row.get("category", "unknown")),
             "state": str(row.get("state", "unknown")),
             "timestamp": timestamp.strftime("%Y-%m-%d %H:%M"),

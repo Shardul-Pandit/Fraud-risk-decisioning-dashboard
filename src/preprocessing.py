@@ -32,6 +32,19 @@ CATEGORICAL_FEATURES = [
 MODEL_FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
 
 
+def clean_merchant_name(merchant) -> str:
+    """
+    Remove the "fraud_" prefix for display.
+
+    Every merchant in this simulated dataset carries that prefix, on
+    legitimate transactions too, so it says nothing about fraud. It is
+    stripped only where names are shown to people or to the LLM. The raw
+    data is untouched, and merchant name is not a model feature.
+    """
+    name = str(merchant)
+    return name[len("fraud_"):] if name.startswith("fraud_") else name
+
+
 def haversine_distance_km(lat1, lon1, lat2, lon2):
     """
     Calculate distance in kilometers between two latitude/longitude points.

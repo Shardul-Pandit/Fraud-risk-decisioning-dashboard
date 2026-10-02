@@ -9,6 +9,7 @@ from src.preprocessing import (
     CATEGORICAL_FEATURES,
     MODEL_FEATURES,
     NUMERIC_FEATURES,
+    clean_merchant_name,
     engineer_features,
     haversine_distance_km,
 )
@@ -94,3 +95,10 @@ def test_every_policy_section_is_found_in_the_policy_file():
 
     with pytest.raises(ValueError):
         get_policy_section("not_a_section")
+
+
+def test_merchant_prefix_is_stripped_for_display_only(transactions):
+    assert clean_merchant_name("fraud_Kiehn Inc") == "Kiehn Inc"
+    assert clean_merchant_name("Kiehn Inc") == "Kiehn Inc"
+    # The stored data keeps the original value.
+    assert transactions["merchant"].str.startswith("fraud_").all()

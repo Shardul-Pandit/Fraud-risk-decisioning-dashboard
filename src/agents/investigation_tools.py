@@ -7,6 +7,7 @@ LLM decides which ones to call. It cannot change anything through them.
 """
 import pandas as pd
 
+from src.preprocessing import clean_merchant_name
 from src.policy_retriever import POLICY_SECTION_TITLES, get_policy_section
 
 
@@ -137,7 +138,7 @@ class InvestigationToolbox:
             "transactions": [
                 {
                     "time": row["_time"].strftime("%Y-%m-%d %H:%M"),
-                    "merchant": str(row["merchant"]),
+                    "merchant": clean_merchant_name(row["merchant"]),
                     "category": str(row["category"]),
                     "amount": f"${float(row['amt']):,.2f}",
                     "minutes_before_this_transaction": (

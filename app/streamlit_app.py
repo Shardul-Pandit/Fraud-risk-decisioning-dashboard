@@ -10,6 +10,7 @@ import streamlit as st
 
 from src.data_loader import load_raw_data
 from src.input_validator import validate_transaction_dataframe
+from src.preprocessing import clean_merchant_name
 from src.agents.fraud_decision_workflow import (
     run_fraud_decision_workflow_with_context,
 )
@@ -437,8 +438,13 @@ def display_selected_transaction(transaction: pd.DataFrame):
         column for column in DISPLAY_COLUMNS if column in transaction.columns
     ]
 
+    display_df = transaction[available_columns].copy()
+
+    if "merchant" in display_df.columns:
+        display_df["merchant"] = display_df["merchant"].apply(clean_merchant_name)
+
     st.dataframe(
-        transaction[available_columns],
+        display_df,
         width="stretch",
     )
 
